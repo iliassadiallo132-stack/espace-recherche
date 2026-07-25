@@ -839,9 +839,7 @@
 
     <script>
       const ADMIN_CODE_DEFAULT = "recherche2026";
-      const DATA_ENDPOINT = "/.netlify/functions/data";
       let adminUnlocked = false;
-      let adminSecretValue = ""; // code saisi, envoyé au serveur pour autoriser l'écriture
       let settings = {
         name: "Prénom Nom",
         heroDesc:
@@ -876,47 +874,64 @@
         document.getElementById(id).classList.remove("open");
       }
 
-      // Charge les données publiques depuis la fonction Netlify (donc pour tout
-      // le monde, pas seulement le navigateur de l'admin).
+      // Charge les données publiques depuis le fichier recherche-data.json
+      // publié sur le site (donc pour tout le monde, pas seulement l'admin).
       async function loadData() {
+        let loadedFromLocal = false;
         try {
-          const res = await fetch(DATA_ENDPOINT, { cache: "no-store" });
-          if (res.ok) {
-            const data = await res.json();
+          const raw = localStorage.getItem("recherche_data");
+          if (raw) {
+            const data = JSON.parse(raw);
             if (data.settings) settings = data.settings;
             if (data.documents) documents = data.documents;
             if (data.videos) videos = data.videos;
-          } else {
-            toast("Impossible de charger les données en ligne.");
+            loadedFromLocal = true;
           }
-        } catch (e) {
-          toast("Erreur réseau au chargement des données.");
+        } catch (e) {}
+        if (!loadedFromLocal) {
+          try {
+            const res = await fetch("./recherche-data.json", {
+              cache: "no-store",
+            });
+            if (res.ok) {
+              const data = await res.json();
+              if (data.settings) settings = data.settings;
+              if (data.documents) documents = data.documents;
+              if (data.videos) videos = data.videos;
+            }
+          } catch (e) {}
         }
         renderAll();
       }
 
-      // Enregistre les données en ligne pour que tout le monde les voie
-      // immédiatement, sans export/import manuel.
-      async function saveData() {
+      // Enregistre les changements localement (dans ce navigateur) pour que
+      // l'admin puisse ensuite les publier via "Exporter les données".
+      function persistLocal() {
         try {
-          const res = await fetch(DATA_ENDPOINT, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-admin-secret": adminSecretValue,
-            },
-            body: JSON.stringify({ settings, documents, videos }),
-          });
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            toast(err.error || "Erreur lors de l'enregistrement en ligne.");
-            return false;
-          }
+          localStorage.setItem(
+            "recherche_data",
+            JSON.stringify({ settings, documents, videos }),
+          );
           return true;
         } catch (e) {
-          toast("Erreur réseau lors de l'enregistrement.");
           return false;
         }
+      }
+
+      function exportData() {
+        const blob = new Blob(
+          [JSON.stringify({ settings, documents, videos }, null, 2)],
+          { type: "application/json" },
+        );
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "recherche-data.json";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast("Fichier téléchargé — remplace-le sur GitHub pour publier");
       }
 
       function getEmbedUrl(url) {
@@ -1101,7 +1116,6 @@
         .addEventListener("click", () => {
           if (adminUnlocked) {
             adminUnlocked = false;
-            adminSecretValue = "";
             document.getElementById("adminToggleBtn").textContent =
               "Mode admin";
             document.getElementById("adminToggleBtn").style.display = "none";
@@ -1123,7 +1137,6 @@
         const currentCode = settings.adminCode || ADMIN_CODE_DEFAULT;
         if (val === currentCode) {
           adminUnlocked = true;
-          adminSecretValue = val;
           closeModal("passModal");
           document.getElementById("adminToggleBtn").textContent =
             "Quitter admin";
@@ -1141,6 +1154,15 @@
       }
 
       function addExtraAdminButtons() {
+        if (!document.getElementById("exportBtn")) {
+          const exBtn = document.createElement("button");
+          exBtn.className = "btn btn-primary";
+          exBtn.id = "exportBtn";
+          exBtn.textContent = "Exporter les données";
+          exBtn.style.marginLeft = "8px";
+          exBtn.onclick = exportData;
+          document.querySelector(".navlinks").appendChild(exBtn);
+        }
         if (!document.getElementById("editProfileBtn")) {
           const epBtn = document.createElement("button");
           epBtn.className = "btn";
@@ -1152,8 +1174,10 @@
         }
       }
       function removeExtraAdminButtons() {
-        const el = document.getElementById("editProfileBtn");
-        if (el) el.remove();
+        ["exportBtn", "editProfileBtn"].forEach((id) => {
+          const el = document.getElementById(id);
+          if (el) el.remove();
+        });
       }
 
       function openEditProfile() {
@@ -1179,12 +1203,12 @@
         document.body.insertAdjacentHTML("beforeend", modalHtml);
       }
 
-      async function saveProfile() {
+      function saveProfile() {
         const err = document.getElementById("epError");
         err.style.display = "none";
         const file = document.getElementById("epPhoto").files[0];
 
-        const finish = async (photoData) => {
+        const finish = (photoData) => {
           settings.name =
             document.getElementById("epName").value.trim() || settings.name;
           settings.heroDesc = document.getElementById("epDesc").value;
@@ -1198,13 +1222,12 @@
             .getElementById("epWeb3formsKey")
             .value.trim();
           if (photoData) settings.photoData = photoData;
-          const ok = await saveData();
-          if (ok) {
-            toast("Profil mis à jour et publié en ligne");
+          if (persistLocal()) {
+            toast("Profil mis à jour — pense à Exporter pour publier");
             document.getElementById("editProfileModal").remove();
             renderAll();
           } else {
-            err.textContent = "Erreur lors de la publication en ligne.";
+            err.textContent = "Erreur lors de l'enregistrement local.";
             err.style.display = "block";
           }
         };
@@ -1232,7 +1255,7 @@
         openModal("addDocModal");
       });
 
-      async function addDoc() {
+      function addDoc() {
         const title = document.getElementById("docTitle").value.trim();
         const category =
           document.getElementById("docCategory").value.trim() || "Document";
@@ -1252,38 +1275,31 @@
           return;
         }
 
-        const newDoc = {
-          id: "doc_" + Date.now(),
-          title,
-          category,
-          description,
-          url: docUrl,
-        };
-        const previous = documents;
-        documents = [...documents, newDoc];
-        const ok = await saveData();
-        if (ok) {
-          toast("Document ajouté et publié en ligne");
+        documents = [
+          ...documents,
+          {
+            id: "doc_" + Date.now(),
+            title,
+            category,
+            description,
+            url: docUrl,
+          },
+        ];
+        if (persistLocal()) {
+          toast("Document ajouté — pense à Exporter pour publier");
           closeModal("addDocModal");
           renderDocs();
         } else {
-          documents = previous;
-          err.textContent = "Erreur lors de la publication en ligne.";
+          err.textContent = "Erreur d'enregistrement local.";
           err.style.display = "block";
         }
       }
-      async function deleteDoc(id) {
+      function deleteDoc(id) {
         if (!confirm("Supprimer ce document ?")) return;
-        const previous = documents;
         documents = documents.filter((d) => d.id !== id);
-        const ok = await saveData();
-        if (ok) {
-          toast("Document supprimé et publié en ligne");
-          renderDocs();
-        } else {
-          documents = previous;
-          toast("Erreur lors de la publication en ligne.");
-        }
+        persistLocal();
+        toast("Document supprimé — pense à Exporter pour publier");
+        renderDocs();
       }
 
       /* Vidéos */
@@ -1296,7 +1312,7 @@
         openModal("addVideoModal");
       });
 
-      async function addVideo() {
+      function addVideo() {
         const title = document.getElementById("vidTitle").value.trim();
         const category =
           document.getElementById("vidCategory").value.trim() || "Vidéo";
@@ -1316,34 +1332,28 @@
           return;
         }
 
-        const previous = videos;
-        videos = [
-          ...videos,
-          { id: "vid_" + Date.now(), title, category, description, url },
-        ];
-        const ok = await saveData();
-        if (ok) {
-          toast("Vidéo ajoutée et publiée en ligne");
+        videos.push({
+          id: "vid_" + Date.now(),
+          title,
+          category,
+          description,
+          url,
+        });
+        if (persistLocal()) {
+          toast("Vidéo ajoutée — pense à Exporter pour publier");
           closeModal("addVideoModal");
           renderVideos();
         } else {
-          videos = previous;
-          err.textContent = "Erreur lors de la publication en ligne.";
+          err.textContent = "Erreur d'enregistrement local.";
           err.style.display = "block";
         }
       }
-      async function deleteVideo(id) {
+      function deleteVideo(id) {
         if (!confirm("Supprimer cette vidéo ?")) return;
-        const previous = videos;
         videos = videos.filter((v) => v.id !== id);
-        const ok = await saveData();
-        if (ok) {
-          toast("Vidéo supprimée et publiée en ligne");
-          renderVideos();
-        } else {
-          videos = previous;
-          toast("Erreur lors de la publication en ligne.");
-        }
+        persistLocal();
+        toast("Vidéo supprimée — pense à Exporter pour publier");
+        renderVideos();
       }
 
       /* Nav mobile + contact form */
